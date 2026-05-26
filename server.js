@@ -203,4 +203,9 @@ app.get("/mcp", (req, res) => {
 
 app.get("/health", (req, res) => res.json({ status: "ok" }));
 
+// Claude calls /authorize (without /oauth prefix)
+app.get("/authorize", (req, res) => {
+  res.redirect(`/oauth/authorize?${new URLSearchParams(req.query)}`);
+});
+
 app.listen(PORT, () => console.log(`GitConnect MCP running on port ${PORT}`));
