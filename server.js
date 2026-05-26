@@ -2,14 +2,13 @@ import express from "express";
 import cors from "cors";
 import { Octokit } from "@octokit/rest";
 import { randomBytes } from "crypto";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
+import { z } from "zod";
 
 const app = express();
-app.use(cors());
+app.use(cors({ origin: "*", exposedHeaders: ["mcp-session-id"] }));
 app.use(express.json());
-
-// ── In-memory token store (replace with Redis/DB for production) ──
-const tokenStore = new Map(); // sessionId -> { accessToken, login }
-const oauthStates = new Map(); // state -> sessionId
 
 const {
   GITHUB_CLIENT_ID,
@@ -18,13 +17,13 @@ const {
   PORT = 3000,
 } = process.env;
 
-// ─────────────────────────────────────────────
-//  OAuth flow
-// ─────────────────────────────────────────────
+// ── Token store ──────────────────────────────
+const tokenStore = new Map(); // sessionId -> accessToken
+const oauthStates = new Map(); // state -> sessionId
 
-// 1. Claude calls this to start OAuth
+// ── OAuth flow ───────────────────────────────
 app.get("/oauth/authorize", (req, res) => {
-  const sessionId = randomBytes(16).toString("hex");
+  const sessionId = req.query.sessionId || randomBytes(16).toString("hex");
   const state = randomBytes(16).toString("hex");
   oauthStates.set(state, sessionId);
 
@@ -35,20 +34,14 @@ app.get("/oauth/authorize", (req, res) => {
     state,
   });
 
-  // Return session info + redirect URL to Claude
-  res.json({
-    sessionId,
-    authUrl: `https://github.com/login/oauth/authorize?${params}`,
-  });
+  res.redirect(`https://github.com/login/oauth/authorize?${params}`);
 });
 
-// 2. GitHub redirects here after user approves
 app.get("/oauth/callback", async (req, res) => {
   const { code, state } = req.query;
   const sessionId = oauthStates.get(state);
   if (!sessionId) return res.status(400).send("Invalid state");
 
-  // Exchange code for access token
   const tokenRes = await fetch("https://github.com/login/oauth/access_token", {
     method: "POST",
     headers: { Accept: "application/json", "Content-Type": "application/json" },
@@ -63,224 +56,143 @@ app.get("/oauth/callback", async (req, res) => {
   const { access_token, error } = await tokenRes.json();
   if (error || !access_token) return res.status(400).send("OAuth failed");
 
-  const octokit = new Octokit({ auth: access_token });
-  const { data: user } = await octokit.rest.users.getAuthenticated();
-
-  tokenStore.set(sessionId, { accessToken: access_token, login: user.login });
+  tokenStore.set(sessionId, access_token);
   oauthStates.delete(state);
 
-  // Close the popup / show success
   res.send(`
-    <html><body style="font-family:sans-serif;text-align:center;padding:60px">
-      <h2>✅ Connected as <strong>${user.login}</strong></h2>
+    <html><body style="font-family:sans-serif;text-align:center;padding:60px;background:#0d1117;color:#fff">
+      <h2>✅ Connected to GitHub!</h2>
       <p>You can close this tab and return to Claude.</p>
       <script>setTimeout(()=>window.close(),2000)</script>
     </body></html>
   `);
 });
 
-// ─────────────────────────────────────────────
-//  MCP endpoint — all tool calls come here
-// ─────────────────────────────────────────────
+// ── MCP SSE endpoint ─────────────────────────
+const transports = new Map();
 
-app.post("/mcp", async (req, res) => {
-  const sessionId = req.headers["x-session-id"];
-  const session = tokenStore.get(sessionId);
+app.get("/mcp", async (req, res) => {
+  const sessionId = req.query.sessionId || randomBytes(16).toString("hex");
+  const accessToken = tokenStore.get(sessionId);
 
-  if (!session) {
-    return res.status(401).json({
-      error: "Not authenticated. Start OAuth at /oauth/authorize",
-    });
-  }
+  const server = new McpServer({
+    name: "GitConnect for Claude",
+    version: "1.0.0",
+  });
 
-  const octokit = new Octokit({ auth: session.accessToken });
-  const { tool, params = {} } = req.body;
+  const octokit = accessToken ? new Octokit({ auth: accessToken }) : null;
 
-  try {
-    switch (tool) {
-      // ── List repos ──────────────────────────
-      case "list_repos": {
-        const { data } = await octokit.rest.repos.listForAuthenticatedUser({
-          sort: "updated",
-          per_page: params.limit || 10,
-          type: "owner",
-        });
-        return res.json(
-          data.map((r) => ({
-            name: r.name,
-            description: r.description,
-            language: r.language,
-            stars: r.stargazers_count,
-            forks: r.forks_count,
-            updated: r.updated_at,
-            url: r.html_url,
-            private: r.private,
-          }))
-        );
-      }
+  // Tool: get_profile
+  server.tool("get_profile", "Get your GitHub profile and recent activity", {}, async () => {
+    if (!octokit) return { content: [{ type: "text", text: `Not authenticated. Please visit: ${BASE_URL}/oauth/authorize?sessionId=${sessionId}` }] };
+    const { data: user } = await octokit.rest.users.getAuthenticated();
+    return {
+      content: [{
+        type: "text", text: JSON.stringify({
+          login: user.login, name: user.name, bio: user.bio,
+          public_repos: user.public_repos, followers: user.followers,
+          following: user.following, url: user.html_url,
+        }, null, 2)
+      }]
+    };
+  });
 
-      // ── Repo overview ────────────────────────
-      case "get_repo": {
-        const { repo } = params;
-        const owner = params.owner || session.login;
-        const [{ data: r }, { data: commits }] = await Promise.all([
-          octokit.rest.repos.get({ owner, repo }),
-          octokit.rest.repos.listCommits({ owner, repo, per_page: 5 }),
-        ]);
-        return res.json({
-          name: r.name,
-          description: r.description,
-          language: r.language,
-          stars: r.stargazers_count,
-          forks: r.forks_count,
-          open_issues: r.open_issues_count,
-          default_branch: r.default_branch,
-          url: r.html_url,
-          recent_commits: commits.map((c) => ({
+  // Tool: list_repos
+  server.tool("list_repos", "List your GitHub repositories sorted by last updated", {
+    limit: z.number().optional().describe("Max repos to return (default 10)"),
+  }, async ({ limit = 10 }) => {
+    if (!octokit) return { content: [{ type: "text", text: `Not authenticated. Please visit: ${BASE_URL}/oauth/authorize?sessionId=${sessionId}` }] };
+    const { data } = await octokit.rest.repos.listForAuthenticatedUser({ sort: "updated", per_page: limit, type: "owner" });
+    return {
+      content: [{
+        type: "text", text: JSON.stringify(data.map(r => ({
+          name: r.name, description: r.description, language: r.language,
+          stars: r.stargazers_count, updated: r.updated_at, url: r.html_url, private: r.private,
+        })), null, 2)
+      }]
+    };
+  });
+
+  // Tool: get_repo
+  server.tool("get_repo", "Get overview of a specific repo including recent commits", {
+    repo: z.string().describe("Repository name"),
+    owner: z.string().optional().describe("Owner login (defaults to you)"),
+  }, async ({ repo, owner }) => {
+    if (!octokit) return { content: [{ type: "text", text: `Not authenticated. Please visit: ${BASE_URL}/oauth/authorize?sessionId=${sessionId}` }] };
+    const { data: user } = await octokit.rest.users.getAuthenticated();
+    const o = owner || user.login;
+    const [{ data: r }, { data: commits }] = await Promise.all([
+      octokit.rest.repos.get({ owner: o, repo }),
+      octokit.rest.repos.listCommits({ owner: o, repo, per_page: 5 }),
+    ]);
+    return {
+      content: [{
+        type: "text", text: JSON.stringify({
+          name: r.name, description: r.description, language: r.language,
+          stars: r.stargazers_count, open_issues: r.open_issues_count,
+          recent_commits: commits.map(c => ({
             sha: c.sha.slice(0, 7),
             message: c.commit.message.split("\n")[0],
             author: c.commit.author.name,
             date: c.commit.author.date,
           })),
-        });
-      }
-
-      // ── Open PRs ─────────────────────────────
-      case "list_prs": {
-        const { repo } = params;
-        const owner = params.owner || session.login;
-        const { data } = await octokit.rest.pulls.list({
-          owner,
-          repo,
-          state: params.state || "open",
-          per_page: params.limit || 10,
-        });
-        return res.json(
-          data.map((p) => ({
-            number: p.number,
-            title: p.title,
-            author: p.user.login,
-            state: p.state,
-            created: p.created_at,
-            url: p.html_url,
-            draft: p.draft,
-          }))
-        );
-      }
-
-      // ── Open issues ──────────────────────────
-      case "list_issues": {
-        const { repo } = params;
-        const owner = params.owner || session.login;
-        const { data } = await octokit.rest.issues.listForRepo({
-          owner,
-          repo,
-          state: params.state || "open",
-          per_page: params.limit || 10,
-        });
-        return res.json(
-          data
-            .filter((i) => !i.pull_request) // exclude PRs
-            .map((i) => ({
-              number: i.number,
-              title: i.title,
-              author: i.user.login,
-              labels: i.labels.map((l) => l.name),
-              created: i.created_at,
-              url: i.html_url,
-            }))
-        );
-      }
-
-      // ── User profile ─────────────────────────
-      case "get_profile": {
-        const { data: user } = await octokit.rest.users.getAuthenticated();
-        const { data: events } = await octokit.rest.activity.listEventsForAuthenticatedUser({
-          username: user.login,
-          per_page: 10,
-        });
-        return res.json({
-          login: user.login,
-          name: user.name,
-          bio: user.bio,
-          public_repos: user.public_repos,
-          followers: user.followers,
-          following: user.following,
-          avatar: user.avatar_url,
-          url: user.html_url,
-          recent_events: events.slice(0, 5).map((e) => ({
-            type: e.type,
-            repo: e.repo.name,
-            date: e.created_at,
-          })),
-        });
-      }
-
-      default:
-        return res.status(400).json({ error: `Unknown tool: ${tool}` });
-    }
-  } catch (err) {
-    console.error(err);
-    return res.status(500).json({ error: err.message });
-  }
-});
-
-// ─────────────────────────────────────────────
-//  MCP manifest — Claude reads this to discover tools
-// ─────────────────────────────────────────────
-
-app.get("/mcp", (req, res) => {
-  res.json({
-    name: "GitHub Connector",
-    description: "Browse your GitHub repos, issues, PRs and profile from Claude",
-    version: "1.0.0",
-    auth: {
-      type: "oauth2",
-      authorizeUrl: `${BASE_URL}/oauth/authorize`,
-    },
-    tools: [
-      {
-        name: "get_profile",
-        description: "Get the authenticated user's GitHub profile and recent activity",
-        parameters: {},
-      },
-      {
-        name: "list_repos",
-        description: "List your GitHub repositories sorted by last updated",
-        parameters: {
-          limit: { type: "number", description: "Max repos to return (default 10)" },
-        },
-      },
-      {
-        name: "get_repo",
-        description: "Get overview of a specific repo: stats, recent commits",
-        parameters: {
-          repo: { type: "string", required: true, description: "Repository name" },
-          owner: { type: "string", description: "Owner login (defaults to you)" },
-        },
-      },
-      {
-        name: "list_prs",
-        description: "List pull requests for a repository",
-        parameters: {
-          repo: { type: "string", required: true },
-          owner: { type: "string" },
-          state: { type: "string", description: "open | closed | all (default: open)" },
-          limit: { type: "number" },
-        },
-      },
-      {
-        name: "list_issues",
-        description: "List issues for a repository (excludes PRs)",
-        parameters: {
-          repo: { type: "string", required: true },
-          owner: { type: "string" },
-          state: { type: "string", description: "open | closed | all (default: open)" },
-          limit: { type: "number" },
-        },
-      },
-    ],
+        }, null, 2)
+      }]
+    };
   });
+
+  // Tool: list_prs
+  server.tool("list_prs", "List pull requests for a repository", {
+    repo: z.string().describe("Repository name"),
+    owner: z.string().optional(),
+    state: z.enum(["open", "closed", "all"]).optional().describe("PR state (default: open)"),
+    limit: z.number().optional(),
+  }, async ({ repo, owner, state = "open", limit = 10 }) => {
+    if (!octokit) return { content: [{ type: "text", text: `Not authenticated. Please visit: ${BASE_URL}/oauth/authorize?sessionId=${sessionId}` }] };
+    const { data: user } = await octokit.rest.users.getAuthenticated();
+    const { data } = await octokit.rest.pulls.list({ owner: owner || user.login, repo, state, per_page: limit });
+    return {
+      content: [{
+        type: "text", text: JSON.stringify(data.map(p => ({
+          number: p.number, title: p.title, author: p.user.login,
+          state: p.state, created: p.created_at, url: p.html_url,
+        })), null, 2)
+      }]
+    };
+  });
+
+  // Tool: list_issues
+  server.tool("list_issues", "List issues for a repository", {
+    repo: z.string().describe("Repository name"),
+    owner: z.string().optional(),
+    state: z.enum(["open", "closed", "all"]).optional().describe("Issue state (default: open)"),
+    limit: z.number().optional(),
+  }, async ({ repo, owner, state = "open", limit = 10 }) => {
+    if (!octokit) return { content: [{ type: "text", text: `Not authenticated. Please visit: ${BASE_URL}/oauth/authorize?sessionId=${sessionId}` }] };
+    const { data: user } = await octokit.rest.users.getAuthenticated();
+    const { data } = await octokit.rest.issues.listForRepo({ owner: owner || user.login, repo, state, per_page: limit });
+    return {
+      content: [{
+        type: "text", text: JSON.stringify(
+          data.filter(i => !i.pull_request).map(i => ({
+            number: i.number, title: i.title, author: i.user.login,
+            labels: i.labels.map(l => l.name), created: i.created_at, url: i.html_url,
+          })), null, 2)
+      }]
+    };
+  });
+
+  const transport = new SSEServerTransport("/messages", res);
+  transports.set(sessionId, transport);
+  res.on("close", () => transports.delete(sessionId));
+  await server.connect(transport);
 });
 
-app.listen(PORT, () => console.log(`GitHub MCP server running on port ${PORT}`));
+app.post("/messages", async (req, res) => {
+  const sessionId = req.query.sessionId;
+  const transport = transports.get(sessionId);
+  if (!transport) return res.status(404).json({ error: "Session not found" });
+  await transport.handlePostMessage(req, res);
+});
+
+app.listen(PORT, () => console.log(`GitConnect MCP server running on port ${PORT}`));
