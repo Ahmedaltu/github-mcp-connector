@@ -70,7 +70,7 @@ app.get("/oauth/authorize", (req, res) => {
 
   const params = new URLSearchParams({
     client_id: GITHUB_CLIENT_ID,
-    redirect_uri: `${BASE_URL}/oauth/callback`,
+    redirect_uri: req.query.redirect_uri,
     scope: "read:user repo",
     state: internalState,
   });
