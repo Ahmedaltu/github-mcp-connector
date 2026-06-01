@@ -190,20 +190,7 @@ app.post("/mcp", async (req, res) => {
     const { data } = await octokit.rest.issues.listForRepo({ owner: owner || user.login, repo, state, per_page: limit });
     return { content: [{ type: "text", text: JSON.stringify(data.filter(i => !i.pull_request).map(i => ({ number: i.number, title: i.title, author: i.user.login, labels: i.labels.map(l => l.name), created: i.created_at, url: i.html_url })), null, 2) }] };
   });
-
-  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-  await server.connect(transport);
-  await transport.handleRequest(req, res, req.body);
-});
-
-app.get("/mcp", (req, res) => {
-  res.set("WWW-Authenticate", `Bearer resource_metadata="${BASE_URL}/.well-known/oauth-protected-resource"`);
-  res.status(401).json({ error: "Use POST with Bearer token" });
-});
-
-app.get("/health", (req, res) => res.json({ status: "ok" }));
-
-server.tool("create_repo", "Create a new GitHub repository", {
+  server.tool("create_repo", "Create a new GitHub repository", {
   name: z.string().describe("Repository name"),
   description: z.string().optional().describe("Repository description"),
   private: z.boolean().optional().describe("Make repo private (default: false)"),
@@ -222,6 +209,20 @@ server.tool("fork_repo", "Fork a GitHub repository", {
   const { data } = await octokit.rest.repos.createFork({ owner, repo });
   return { content: [{ type: "text", text: JSON.stringify({ name: data.name, url: data.html_url, forked_from: `${owner}/${repo}`, created: data.created_at }, null, 2) }] };
 });
+
+  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+  await server.connect(transport);
+  await transport.handleRequest(req, res, req.body);
+});
+
+app.get("/mcp", (req, res) => {
+  res.set("WWW-Authenticate", `Bearer resource_metadata="${BASE_URL}/.well-known/oauth-protected-resource"`);
+  res.status(401).json({ error: "Use POST with Bearer token" });
+});
+
+app.get("/health", (req, res) => res.json({ status: "ok" }));
+
+
 
 // Claude calls /authorize (without /oauth prefix)
 app.get("/authorize", (req, res) => {
