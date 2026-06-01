@@ -195,11 +195,14 @@ app.post("/mcp", async (req, res) => {
   description: z.string().optional().describe("Repository description"),
   private: z.boolean().optional().describe("Make repo private (default: false)"),
   auto_init: z.boolean().optional().describe("Initialize with README (default: true)"),
-}, async ({ name, description, private: isPrivate = false, auto_init = true }) => {
-  const { data } = await octokit.rest.repos.createForAuthenticatedUser({
-    name, description, private: isPrivate, auto_init,
-  });
-  return { content: [{ type: "text", text: JSON.stringify({ name: data.name, url: data.html_url, private: data.private, created: data.created_at }, null, 2) }] };
+  topics: z.array(z.string()).optional().describe("Topics/tags for the repo"),
+}, async ({ name, description, private: isPrivate = false, auto_init = true, topics }) => {
+  const { data } = await octokit.rest.repos.createForAuthenticatedUser({ name, description, private: isPrivate, auto_init });
+  if (topics && topics.length > 0) {
+    const { data: user } = await octokit.rest.users.getAuthenticated();
+    await octokit.rest.repos.replaceAllTopics({ owner: user.login, repo: name, names: topics });
+  }
+  return { content: [{ type: "text", text: JSON.stringify({ name: data.name, url: data.html_url, private: data.private, topics: topics || [], created: data.created_at }, null, 2) }] };
 });
 
 server.tool("fork_repo", "Fork a GitHub repository", {
