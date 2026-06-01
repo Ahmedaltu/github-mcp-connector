@@ -1,81 +1,94 @@
-# GitHub MCP Connector for Claude.ai
+# GitConnect for Claude
 
-Connect your GitHub account to Claude.ai. Browse repos, issues, PRs and your profile directly in conversation.
+A GitHub MCP connector for Claude.ai — browse repos, issues, PRs, create repos, fork projects, and more, all conversationally.
 
-## Tools available in Claude
-
-| Tool | What it does |
-|---|---|
-| `get_profile` | Your GitHub profile + recent activity |
-| `list_repos` | Your repos sorted by last updated |
-| `get_repo` | Stats + recent commits for any repo |
-| `list_prs` | Open/closed PRs for a repo |
-| `list_issues` | Open/closed issues for a repo |
+Built with Node.js, Express, and the official MCP SDK. Deployed on Railway with GitHub OAuth 2.1.
 
 ---
 
-## Setup
+## What you can ask Claude
+
+- *"Show me my GitHub repos"*
+- *"What are the open issues on my thinbox repo?"*
+- *"Any open PRs on github-mcp-connector?"*
+- *"Show recent commits on cloudinit-aigen"*
+- *"Create a new private repo called my-project"*
+- *"Fork anthropics/anthropic-quickstarts for me"*
+
+---
+
+## Tools
+
+| Tool | Description |
+|---|---|
+| `get_profile` | Your GitHub profile and recent activity |
+| `list_repos` | Your repos sorted by last updated |
+| `get_repo` | Stats and recent commits for any repo |
+| `list_prs` | Open/closed PRs for a repo |
+| `list_issues` | Open/closed issues for a repo |
+| `create_repo` | Create a new GitHub repository |
+| `fork_repo` | Fork any GitHub repository |
+
+---
+
+## Connect to Claude.ai (use hosted version)
+
+1. Go to **Claude.ai → Customize → Connectors → +**
+2. Fill in:
+   - **Name**: `GitConnect for Claude`
+   - **Remote MCP server URL**: `https://github-mcp-connector-production.up.railway.app/mcp`
+   - **OAuth Client ID**: your GitHub OAuth app Client ID
+   - **OAuth Client Secret**: your GitHub OAuth app Client Secret
+3. Click **Add** then **Connect**
+4. Authorize with your GitHub account
+5. Done ✅
+
+---
+
+## Self-host
 
 ### 1. Create a GitHub OAuth App
 
-1. Go to **GitHub → Settings → Developer settings → OAuth Apps → New OAuth App**
-2. Fill in:
-   - **Application name**: GitHub MCP for Claude
-   - **Homepage URL**: your Railway URL (or `http://localhost:3000` for dev)
-   - **Authorization callback URL**: `https://your-app.up.railway.app/oauth/callback`
-3. Copy the **Client ID** and generate a **Client Secret**
+Go to **GitHub → Settings → Developer settings → OAuth Apps → New OAuth App**
+
+- **Application name**: `GitConnect for Claude`
+- **Homepage URL**: `https://your-app.up.railway.app`
+- **Authorization callback URL**: `https://your-app.up.railway.app/oauth/callback`
+
+Copy the **Client ID** and generate a **Client Secret**.
 
 ### 2. Deploy to Railway
 
 ```bash
-# Clone and push to GitHub first, then:
+git clone https://github.com/Ahmedaltu/github-mcp-connector
+cd github-mcp-connector
 railway login
 railway init
 railway up
 ```
 
 Set environment variables in Railway dashboard:
+
 ```
-GITHUB_CLIENT_ID=...
-GITHUB_CLIENT_SECRET=...
+GITHUB_CLIENT_ID=your_client_id
+GITHUB_CLIENT_SECRET=your_client_secret
 BASE_URL=https://your-app.up.railway.app
 ```
 
 ### 3. Connect in Claude.ai
 
-1. Go to **Claude.ai → Settings → Integrations**
-2. Click **Add MCP server**
-3. Enter your Railway URL: `https://your-app.up.railway.app/mcp`
-4. Click **Connect** — GitHub OAuth flow opens
-5. Authorize → done ✅
-
-### 4. Local development
-
-```bash
-npm install
-cp .env.example .env   # fill in your values
-npm run dev
-```
-
-Server runs at `http://localhost:3000`
+Follow the same steps above using your own Railway URL.
 
 ---
 
-## Example prompts in Claude
+## Stack
 
-- *"Show me my GitHub repos"*
-- *"What are the open issues in my listifyapp repo?"*
-- *"Show recent commits on Ahmedaltu/thinbox"*
-- *"Any open PRs on my ubuntu-cloud-lab?"*
+- **Runtime**: Node.js + Express
+- **Protocol**: MCP SDK (Streamable HTTP transport)
+- **Auth**: OAuth 2.1 with PKCE
+- **Deployment**: Railway
 
 ---
-
-## Publishing to Anthropic's MCP directory
-
-Once deployed and working:
-1. Fork `anthropics/anthropic-quickstarts`
-2. Add your connector entry with name, URL, description, and tool list
-3. Open a PR — Anthropic reviews and lists it
 
 ## License
 
