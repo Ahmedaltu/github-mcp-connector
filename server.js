@@ -203,6 +203,26 @@ app.get("/mcp", (req, res) => {
 
 app.get("/health", (req, res) => res.json({ status: "ok" }));
 
+server.tool("create_repo", "Create a new GitHub repository", {
+  name: z.string().describe("Repository name"),
+  description: z.string().optional().describe("Repository description"),
+  private: z.boolean().optional().describe("Make repo private (default: false)"),
+  auto_init: z.boolean().optional().describe("Initialize with README (default: true)"),
+}, async ({ name, description, private: isPrivate = false, auto_init = true }) => {
+  const { data } = await octokit.rest.repos.createForAuthenticatedUser({
+    name, description, private: isPrivate, auto_init,
+  });
+  return { content: [{ type: "text", text: JSON.stringify({ name: data.name, url: data.html_url, private: data.private, created: data.created_at }, null, 2) }] };
+});
+
+server.tool("fork_repo", "Fork a GitHub repository", {
+  owner: z.string().describe("Owner of the repo to fork"),
+  repo: z.string().describe("Repository name to fork"),
+}, async ({ owner, repo }) => {
+  const { data } = await octokit.rest.repos.createFork({ owner, repo });
+  return { content: [{ type: "text", text: JSON.stringify({ name: data.name, url: data.html_url, forked_from: `${owner}/${repo}`, created: data.created_at }, null, 2) }] };
+});
+
 // Claude calls /authorize (without /oauth prefix)
 app.get("/authorize", (req, res) => {
   const params = new URLSearchParams(req.query);
