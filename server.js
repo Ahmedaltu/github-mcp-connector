@@ -190,6 +190,43 @@ app.post("/mcp", async (req, res) => {
     const { data } = await octokit.rest.issues.listForRepo({ owner: owner || user.login, repo, state, per_page: limit });
     return { content: [{ type: "text", text: JSON.stringify(data.filter(i => !i.pull_request).map(i => ({ number: i.number, title: i.title, author: i.user.login, labels: i.labels.map(l => l.name), created: i.created_at, url: i.html_url })), null, 2) }] };
   });
+  server.tool("search_prs", "Search open source PR contributions across repos", {}, async () => {
+    const { data } = await octokit.rest.search.issuesAndPullRequests({
+      q: "is:pr author:Ahmedaltu repo:metal3-io/metal3-dev-env repo:canonical/cloud-init repo:istio/istio.io",
+      per_page: 50,
+    });
+
+    const prs = await Promise.all(data.items.map(async (item) => {
+      const match = item.repository_url.match(/\/repos\/([^/]+)\/([^/]+)$/);
+      const [, owner, repo] = match;
+
+      let review_status = "pending";
+      try {
+        const { data: reviews } = await octokit.rest.pulls.listReviews({ owner, repo, pull_number: item.number });
+        const latestByReviewer = {};
+        for (const r of reviews) {
+          if (r.state !== "COMMENTED" && r.state !== "DISMISSED") {
+            latestByReviewer[r.user.login] = r.state;
+          }
+        }
+        const states = Object.values(latestByReviewer);
+        if (states.includes("CHANGES_REQUESTED")) review_status = "changes_requested";
+        else if (states.length > 0 && states.every(s => s === "APPROVED")) review_status = "approved";
+      } catch (_) {}
+
+      return {
+        title: item.title,
+        state: item.state,
+        repo: `${owner}/${repo}`,
+        review_status,
+        url: item.html_url,
+        updated_at: item.updated_at,
+      };
+    }));
+
+    return { content: [{ type: "text", text: JSON.stringify(prs, null, 2) }] };
+  });
+
   server.tool("create_repo", "Create a new GitHub repository", {
   name: z.string().describe("Repository name"),
   description: z.string().optional().describe("Repository description"),
