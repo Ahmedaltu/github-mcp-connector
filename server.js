@@ -192,7 +192,7 @@ app.post("/mcp", async (req, res) => {
   });
   server.tool("search_prs", "Search open source PR contributions across repos", {}, async () => {
     const { data } = await octokit.rest.search.issuesAndPullRequests({
-      q: "is:pr author:Ahmedaltu repo:metal3-io/metal3-dev-env repo:canonical/cloud-init repo:istio/istio.io",
+      q: "is:pr is:open author:Ahmedaltu repo:metal3-io/metal3-dev-env repo:canonical/cloud-init repo:istio/istio.io",
       per_page: 50,
     });
 
