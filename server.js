@@ -190,6 +190,22 @@ app.post("/mcp", async (req, res) => {
     const { data } = await octokit.rest.issues.listForRepo({ owner: owner || user.login, repo, state, per_page: limit });
     return { content: [{ type: "text", text: JSON.stringify(data.filter(i => !i.pull_request).map(i => ({ number: i.number, title: i.title, author: i.user.login, labels: i.labels.map(l => l.name), created: i.created_at, url: i.html_url })), null, 2) }] };
   });
+
+  server.tool("get_readme", "Get the README content for a repository.", { repo: z.string(), owner: z.string().optional(), ref: z.string().optional() }, async ({ repo, owner, ref }) => {
+    const { data: user } = await octokit.rest.users.getAuthenticated();
+    const o = owner || user.login;
+    try {
+      const { data } = await octokit.rest.repos.getReadme({ owner: o, repo, ...(ref ? { ref } : {}) });
+      const decoded = Buffer.from(data.content, "base64").toString("utf8");
+      const MAX = 3000;
+      const text = decoded.length > MAX ? decoded.slice(0, MAX) + `\n\n[README truncated — ${decoded.length} characters total]` : decoded;
+      return { content: [{ type: "text", text }] };
+    } catch (err) {
+      if (err.status === 404) return { content: [{ type: "text", text: `No README found for ${o}/${repo}.` }] };
+      throw err;
+    }
+  });
+
   server.tool("search_prs", "Search open source PR contributions across repos", {}, async () => {
     const { data } = await octokit.rest.search.issuesAndPullRequests({
       q: "is:pr is:open author:Ahmedaltu repo:metal3-io/metal3-dev-env repo:canonical/cloud-init repo:istio/istio.io",
